@@ -1,6 +1,11 @@
 package com.tannmenghong.tbchat.download
 
 import android.content.Context
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.os.Build
+import androidx.core.app.NotificationCompat
+import androidx.work.ForegroundInfo
 import androidx.work.CoroutineWorker
 import androidx.work.Data
 import androidx.work.WorkerParameters
@@ -17,6 +22,7 @@ class ModelDownloadWorker(context: Context, params: WorkerParameters) : Coroutin
         val modelId = inputData.getString(MODEL_KEY) ?: error("Missing model id")
         val path = inputData.getString(PATH_KEY) ?: error("Missing artifact path")
         val expectedBytes = inputData.getLong(BYTES_KEY, -1)
+        setForeground(createForegroundInfo("Preparing model download"))
         val root = File(applicationContext.getExternalFilesDir(null), "models/$modelId").apply { mkdirs() }
         val target = File(root, path).apply { parentFile?.mkdirs() }
         val partial = File(target.path + ".part")
@@ -33,7 +39,11 @@ class ModelDownloadWorker(context: Context, params: WorkerParameters) : Coroutin
             val buffer = ByteArray(128 * 1024); var total = startingAt; var read: Int
             while (input.read(buffer).also { read = it } >= 0) {
                 output.write(buffer, 0, read); total += read
-                if (expectedBytes > 0) setProgress(Data.Builder().putInt(PROGRESS_KEY, (total * 100 / expectedBytes).toInt()).build())
+                if (expectedBytes > 0) {
+                    val percent = (total * 100 / expectedBytes).toInt()
+                    setProgress(Data.Builder().putInt(PROGRESS_KEY, percent).build())
+                    setForeground(createForegroundInfo("Downloading model: $percent%"))
+                }
                 if (isStopped) return Result.retry()
             }
         } }
@@ -46,6 +56,21 @@ class ModelDownloadWorker(context: Context, params: WorkerParameters) : Coroutin
         val digest = MessageDigest.getInstance("SHA-256"); val buffer = ByteArray(128 * 1024); var count: Int
         while (input.read(buffer).also { count = it } >= 0) digest.update(buffer, 0, count)
         digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private fun createForegroundInfo(status: String): ForegroundInfo {
+        val channelId = "model_downloads"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val manager = applicationContext.getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(NotificationChannel(channelId, "Model downloads", NotificationManager.IMPORTANCE_LOW))
+        }
+        val notification = NotificationCompat.Builder(applicationContext, channelId)
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setContentTitle("TBchat")
+            .setContentText(status)
+            .setOngoing(true)
+            .build()
+        return ForegroundInfo(4_208, notification)
     }
 
     companion object {

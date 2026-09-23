@@ -10,126 +10,75 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
-import com.tannmenghong.tbchat.catalog.CatalogRepository
-import com.tannmenghong.tbchat.catalog.CatalogVerifier
+import com.tannmenghong.tbchat.catalog.StarterCatalog
 import com.tannmenghong.tbchat.data.*
 import com.tannmenghong.tbchat.device.DeviceCompatibility
 import com.tannmenghong.tbchat.domain.CatalogModel
-import com.tannmenghong.tbchat.domain.ModelCatalog
+import com.tannmenghong.tbchat.download.DownloadStatus
 import com.tannmenghong.tbchat.download.ModelDownloadManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.UUID
-
-private const val CATALOG_PUBLIC_KEY = "MCowBQYDK2VwAyEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val app = applicationContext
-        val vm = ViewModelProvider(this, Factory(app))[StudioViewModel::class.java]
-        setContent { MaterialTheme { StudioApp(vm) } }
+        val model = ViewModelProvider(this, Factory(applicationContext))[StudioViewModel::class.java]
+        setContent { TBchatTheme { StudioApp(model) } }
     }
 }
-
 private class Factory(private val context: android.content.Context) : ViewModelProvider.Factory {
-    @Suppress("UNCHECKED_CAST") override fun <T : ViewModel> create(modelClass: Class<T>): T = StudioViewModel(context) as T
+    @Suppress("UNCHECKED_CAST") override fun <T : ViewModel> create(type: Class<T>) = StudioViewModel(context) as T
 }
 
 class StudioViewModel(private val context: android.content.Context) : ViewModel() {
-    private val db = LocalDatabase.open(context); private val dao = db.dao()
-    val conversations = dao.conversations().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    private val dao = LocalDatabase.open(context).dao(); private val downloads = ModelDownloadManager(context)
+    val models = StarterCatalog.catalog.models
+    val modelStatus = MutableStateFlow(models.associate { it.id to DownloadStatus(DownloadStatus.Phase.NOT_INSTALLED) })
     val selectedConversation = MutableStateFlow<String?>(null)
-    val messages = selectedConversation.flatMapLatest { id -> if (id == null) flowOf(emptyList()) else dao.messages(id) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
-    val catalog = MutableStateFlow<ModelCatalog?>(null)
-    val catalogMessage = MutableStateFlow("Refresh the signed catalog before downloading models.")
-    private val catalogRepo = CatalogRepository(context, CatalogVerifier(CATALOG_PUBLIC_KEY))
-    private val downloader = ModelDownloadManager(context)
-
-    fun refreshCatalog() = viewModelScope.launch {
-        catalogMessage.value = "Checking signed catalog…"
-        catalogRepo.refresh().onSuccess { catalog.value = it; catalogMessage.value = "Catalog verified." }
-            .onFailure { catalogRepo.cached().onSuccess { cached -> catalog.value = cached; catalogMessage.value = "Using verified cached catalog." }
-                .onFailure { catalogMessage.value = it.message ?: "Catalog unavailable." } }
-    }
-    fun send(text: String) = viewModelScope.launch {
-        if (text.isBlank()) return@launch
-        val id = selectedConversation.value ?: UUID.randomUUID().toString().also { selectedConversation.value = it }
-        val now = System.currentTimeMillis()
-        dao.putConversation(ConversationEntity(id, text.take(40), now, now))
-        dao.putMessage(MessageEntity(UUID.randomUUID().toString(), id, "user", text, now))
-        dao.putMessage(MessageEntity(UUID.randomUUID().toString(), id, "assistant", "Download and load a chat model to generate an offline response.", now + 1))
-    }
-    fun install(model: CatalogModel) { downloader.enqueue(model) }
-    fun compatible(model: CatalogModel) = DeviceCompatibility.check(context, model)
+    val messages = selectedConversation.flatMapLatest { id -> if (id == null) flowOf(emptyList()) else dao.messages(id) }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    init { refreshModelStatus() }
+    fun refreshModelStatus() = viewModelScope.launch(Dispatchers.IO) { modelStatus.value = models.associate { it.id to downloads.status(it) } }
+    fun download(model: CatalogModel) { downloads.enqueue(model); watch(model) }
+    fun cancel(model: CatalogModel) { downloads.cancel(model); refreshModelStatus() }
+    fun remove(model: CatalogModel) { downloads.remove(model); refreshModelStatus() }
+    fun compatibility(model: CatalogModel) = DeviceCompatibility.check(context, model)
+    private fun watch(model: CatalogModel) = viewModelScope.launch { repeat(7200) { val state = withContext(Dispatchers.IO) { downloads.status(model) }; modelStatus.update { it + (model.id to state) }; if (state.phase !in setOf(DownloadStatus.Phase.QUEUED, DownloadStatus.Phase.DOWNLOADING)) return@launch; delay(1_000) } }
+    fun send(text: String) = viewModelScope.launch { if (text.isBlank()) return@launch; val id = selectedConversation.value ?: UUID.randomUUID().toString().also { selectedConversation.value = it }; val now = System.currentTimeMillis(); dao.putConversation(ConversationEntity(id, text.take(40), now, now)); dao.putMessage(MessageEntity(UUID.randomUUID().toString(), id, "user", text, now)) }
     fun clearHistory() = viewModelScope.launch { dao.clearConversations(); dao.clearImages() }
 }
 
+@Composable private fun TBchatTheme(content: @Composable () -> Unit) = MaterialTheme(colorScheme = lightColorScheme(primary = Color(0xFF155EEF), secondary = Color(0xFF475467), surface = Color(0xFFF9FAFB)), content = content)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable private fun StudioApp(vm: StudioViewModel) {
-    var tab by rememberSaveable { mutableStateOf(0) }
-    val labels = listOf("Chat", "Create Image", "Models", "Settings")
-    Scaffold(bottomBar = { NavigationBar { labels.forEachIndexed { index, label -> NavigationBarItem(index == tab, { tab = index }, { Text(label) }) } } }) { padding ->
-        Box(Modifier.padding(padding).fillMaxSize()) { when (tab) {
-            0 -> ChatScreen(vm); 1 -> ImageScreen(); 2 -> ModelsScreen(vm); else -> SettingsScreen(vm)
-        } }
-    }
+    var tab by rememberSaveable { mutableIntStateOf(0) }; val tabs = listOf("Chat", "Models", "Create", "Settings")
+    Scaffold(topBar = { CenterAlignedTopAppBar(title = { Text("TBchat", fontWeight = FontWeight.Bold) }) }, bottomBar = { NavigationBar { tabs.forEachIndexed { i, name -> NavigationBarItem(i == tab, { tab = i }, icon = { Text(if (i == tab) "●" else "○") }, label = { Text(name) }) } } }) { inset -> Box(Modifier.padding(inset).fillMaxSize()) { when(tab) { 0 -> ChatScreen(vm); 1 -> ModelsScreen(vm); 2 -> ImageScreen(); else -> SettingsScreen(vm) } } }
 }
 
 @Composable private fun ChatScreen(vm: StudioViewModel) {
-    val messages by vm.messages.collectAsStateWithLifecycle(); var input by rememberSaveable { mutableStateOf("") }
-    Column(Modifier.padding(16.dp).fillMaxSize()) {
-        Text("Offline chat", style = MaterialTheme.typography.headlineSmall)
-        Text("Messages stay on this phone. Download a compatible GGUF model in Models.")
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(messages) { message -> Card { Text("${message.role}: ${message.body}", Modifier.padding(12.dp)) } }
-        }
-        Row { OutlinedTextField(input, { input = it }, Modifier.weight(1f), label = { Text("Message") }); Spacer(Modifier.width(8.dp)); Button({ vm.send(input); input = "" }) { Text("Send") } }
-    }
-}
-
-@Composable private fun ImageScreen() {
-    var prompt by rememberSaveable { mutableStateOf("") }
-    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Create image", style = MaterialTheme.typography.headlineSmall)
-        Text("Text-to-image is processed locally after the ONNX model package is installed.")
-        OutlinedTextField(prompt, { prompt = it }, Modifier.fillMaxWidth(), label = { Text("Prompt") }, minLines = 3)
-        Button(enabled = false, onClick = {}) { Text("Install an image model to generate") }
-        Text("v1: 512×512, optional negative prompt, seed, steps, and guidance. Images are saved to the gallery only when you choose Save.")
-    }
+    val messages by vm.messages.collectAsStateWithLifecycle(); val states by vm.modelStatus.collectAsStateWithLifecycle(); val ready = vm.models.any { states[it.id]?.phase == DownloadStatus.Phase.INSTALLED }; var input by rememberSaveable { mutableStateOf("") }
+    Column(Modifier.padding(20.dp).fillMaxSize()) { Text("Private chat", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold); Text(if (ready) "Your local model is ready to load." else "Set up a model first—nothing is sent to a server.", color = MaterialTheme.colorScheme.onSurfaceVariant); Spacer(Modifier.height(16.dp)); if (!ready) SetupBanner("Download Qwen3 in Models to start offline chat."); LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) { items(messages) { Card { Text(it.body, Modifier.padding(14.dp)) } } }; OutlinedTextField(value = input, onValueChange = { input = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Message") }, enabled = ready, trailingIcon = { TextButton(enabled = ready, onClick = { vm.send(input); input = "" }) { Text("Send") } }) }
 }
 
 @Composable private fun ModelsScreen(vm: StudioViewModel) {
-    val catalog by vm.catalog.collectAsStateWithLifecycle(); val message by vm.catalogMessage.collectAsStateWithLifecycle()
-    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Models", style = MaterialTheme.typography.headlineSmall)
-        Text(message)
-        Button({ vm.refreshCatalog() }) { Text("Refresh signed catalog") }
-        Text("Starter catalog: Qwen3 4B Instruct (GGUF Q4) and Stable Diffusion 1.5 (ONNX). Downloads are enabled only after a signed catalog is published.")
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) { items(catalog?.models ?: emptyList()) { model -> ModelCard(model, vm) } }
-    }
+    val states by vm.modelStatus.collectAsStateWithLifecycle(); LazyColumn(Modifier.padding(20.dp).fillMaxSize(), verticalArrangement = Arrangement.spacedBy(14.dp)) { item { Text("Model library", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold); Text("Download once, then use offline.", color = MaterialTheme.colorScheme.onSurfaceVariant) }; items(vm.models) { model -> ModelCard(model, states[model.id] ?: DownloadStatus(DownloadStatus.Phase.NOT_INSTALLED), vm) }; item { Text("Only models with tested mobile settings appear here.", style = MaterialTheme.typography.bodySmall) } }
 }
 
-@Composable private fun ModelCard(model: CatalogModel, vm: StudioViewModel) {
-    val check = vm.compatible(model)
-    var accepted by rememberSaveable(model.id) { mutableStateOf(false) }
-    Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(model.name, style = MaterialTheme.typography.titleMedium); Text("${model.modality} · ${model.requiredRamGb} GB RAM · ${model.licenseName}")
-        Row { Checkbox(accepted, { accepted = it }); Text("I accept the model license before downloading.") }
-        if (!check.eligible) Text(check.reasons.joinToString(" "), color = MaterialTheme.colorScheme.error)
-        Button(enabled = check.eligible && accepted, onClick = { vm.install(model) }) { Text("Download") }
-    } }
+@Composable private fun ModelCard(model: CatalogModel, status: DownloadStatus, vm: StudioViewModel) {
+    val compatibility = vm.compatibility(model); var accepted by rememberSaveable(model.id) { mutableStateOf(false) }
+    ElevatedCard(Modifier.fillMaxWidth()) { Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) { Text(model.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Text("Offline chat · 2.50 GB download · 8 GB RAM recommended"); Text("Apache-2.0 · Verified before installation", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant); when(status.phase) { DownloadStatus.Phase.DOWNLOADING -> { LinearProgressIndicator(progress = status.progress / 100f, modifier = Modifier.fillMaxWidth()); Text("Downloading ${status.progress}%") }; DownloadStatus.Phase.QUEUED -> Text(status.message, color = MaterialTheme.colorScheme.primary); DownloadStatus.Phase.INSTALLED -> Text("Installed and ready", color = Color(0xFF067647), fontWeight = FontWeight.Bold); DownloadStatus.Phase.FAILED -> Text(status.message, color = MaterialTheme.colorScheme.error); else -> Unit }; if (!compatibility.eligible) Text(compatibility.reasons.joinToString(" "), color = MaterialTheme.colorScheme.error); when(status.phase) { DownloadStatus.Phase.NOT_INSTALLED, DownloadStatus.Phase.FAILED -> { Row { Checkbox(accepted, { accepted = it }); Text("I accept the ${model.licenseName} license.") }; Button(enabled = accepted && compatibility.eligible, onClick = { vm.download(model) }, modifier = Modifier.fillMaxWidth()) { Text("Download model") } }; DownloadStatus.Phase.QUEUED, DownloadStatus.Phase.DOWNLOADING -> OutlinedButton(onClick = { vm.cancel(model) }, modifier = Modifier.fillMaxWidth()) { Text("Cancel download") }; DownloadStatus.Phase.INSTALLED -> OutlinedButton(onClick = { vm.remove(model) }, modifier = Modifier.fillMaxWidth()) { Text("Remove from device") } } } }
 }
 
-@Composable private fun SettingsScreen(vm: StudioViewModel) {
-    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Settings", style = MaterialTheme.typography.headlineSmall)
-        Text("Privacy: TBchat has no account, analytics, cloud inference, or prompt/image upload. Network access is limited to the catalog and model files you request.")
-        Button({ vm.clearHistory() }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("Clear local chat and image history") }
-    }
-}
+@Composable private fun ImageScreen() = Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { Text("Image maker", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold); SetupBanner("Text-to-image is not enabled in this release. It will appear only after its offline model and Android runtime are fully tested.") }
+@Composable private fun SettingsScreen(vm: StudioViewModel) = Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) { Text("Your data", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold); Text("Chats and model files stay on this phone. No accounts, analytics, cloud inference, or prompt uploads."); OutlinedButton(onClick = { vm.clearHistory() }) { Text("Clear local history") } }
+@Composable private fun SetupBanner(text: String) = Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFEFF4FF))) { Text(text, Modifier.padding(14.dp), color = Color(0xFF1849A9)) }
