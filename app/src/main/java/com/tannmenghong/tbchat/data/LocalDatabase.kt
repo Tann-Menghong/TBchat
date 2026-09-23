@@ -16,7 +16,10 @@ data class ImageEntity(@PrimaryKey val id: String, val prompt: String, val negat
 @Dao interface LocalDao {
     @Query("SELECT * FROM conversations ORDER BY updatedAt DESC") fun conversations(): Flow<List<ConversationEntity>>
     @Query("SELECT * FROM messages WHERE conversationId = :id ORDER BY createdAt") fun messages(id: String): Flow<List<MessageEntity>>
-    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putConversation(item: ConversationEntity)
+    @Upsert suspend fun putConversation(item: ConversationEntity)
+    @Query("DELETE FROM conversations WHERE id = :id") suspend fun deleteConversation(id: String)
+    @Query("UPDATE conversations SET title = :title WHERE id = :id") suspend fun rename(id: String, title: String)
+    @Query("SELECT * FROM messages WHERE conversationId = :id ORDER BY createdAt") suspend fun history(id: String): List<MessageEntity>
     @Insert suspend fun putMessage(item: MessageEntity)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putImage(item: ImageEntity)
     @Query("DELETE FROM conversations") suspend fun clearConversations()

@@ -16,8 +16,8 @@ object DeviceCompatibility {
         val memory = ActivityManager.MemoryInfo().also {
             (context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(it)
         }
-        val memoryGb = (memory.totalMem / (1024L * 1024L * 1024L)).toInt()
-        if (memoryGb < model.requiredRamGb) reasons += "Model needs at least ${model.requiredRamGb} GB RAM."
+        // Android reserves part of advertised RAM for hardware; allow that reservation.
+        if (memory.totalMem < model.requiredRamGb * 1_000_000_000L * 0.85) reasons += "Model needs approximately ${model.requiredRamGb} GB RAM."
         val free = StatFs(context.getExternalFilesDir(null)?.path ?: context.filesDir.path).availableBytes
         if (free < model.requiredStorageBytes) reasons += "Not enough free storage for this model."
         return Compatibility(reasons.isEmpty(), reasons)

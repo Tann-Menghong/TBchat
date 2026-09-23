@@ -1,4 +1,6 @@
 .gradle/
+.gradle-user/
+.cxx/
 build/
 app/build/
 local.properties
