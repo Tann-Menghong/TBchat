@@ -1,0 +1,31 @@
+{
+  "expiresAtEpochMs": 1893456000000,
+  "models": [
+    {
+      "id": "qwen3-4b-instruct-q4",
+      "name": "Qwen3 4B Instruct (Q4)",
+      "version": "REPLACE_WITH_TESTED_VERSION",
+      "modality": "CHAT",
+      "artifacts": [{ "url": "https://MODEL_HOST/REPLACE.gguf", "sha256": "REPLACE_WITH_64_HEX_SHA256", "bytes": 0, "path": "model.gguf" }],
+      "licenseName": "Apache-2.0",
+      "licenseUrl": "https://www.apache.org/licenses/LICENSE-2.0",
+      "sourceUrl": "https://huggingface.co/Qwen/Qwen3-4B-GGUF",
+      "requiredRamGb": 8,
+      "requiredStorageBytes": 0,
+      "engine": { "format": "gguf", "contextLength": 4096 }
+    },
+    {
+      "id": "stable-diffusion-15-onnx",
+      "name": "Stable Diffusion 1.5 (ONNX)",
+      "version": "REPLACE_WITH_TESTED_VERSION",
+      "modality": "IMAGE",
+      "artifacts": [{ "url": "https://MODEL_HOST/REPLACE.zip", "sha256": "REPLACE_WITH_64_HEX_SHA256", "bytes": 0, "path": "model.zip" }],
+      "licenseName": "CreativeML Open RAIL-M",
+      "licenseUrl": "https://huggingface.co/spaces/CompVis/stable-diffusion-license",
+      "sourceUrl": "https://huggingface.co/runwayml/stable-diffusion-v1-5",
+      "requiredRamGb": 8,
+      "requiredStorageBytes": 0,
+      "engine": { "format": "onnx", "width": 512, "height": 512 }
+    }
+  ]
+}
